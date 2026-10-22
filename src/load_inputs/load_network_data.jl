@@ -11,6 +11,7 @@ function load_network_data!(setup::Dict, path::AbstractString, inputs_nw::Dict)
 
     as_vector(col::Symbol) = collect(skipmissing(network_var[!, col]))
     to_floats(col::Symbol) = convert(Array{Float64}, as_vector(col))
+    to_ints(col::Symbol) = convert(Array{Int64}, as_vector(col))
 
     # Number of zones in the network
     Z = length(as_vector(:Network_zones))
@@ -23,7 +24,55 @@ function load_network_data!(setup::Dict, path::AbstractString, inputs_nw::Dict)
     inputs_nw["pNet_Map"] = load_network_map(network_var, Z, L)
 
     # Transmission capacity of the network (in MW)
-    inputs_nw["pTrans_Max"] = to_floats(:Line_Max_Flow_MW) / scale_factor  # convert to GW
+    # With MeanPowerFactor > 0, derate MVA ratings to active power for transport/DCOPF
+    mean_pf = setup["MeanPowerFactor"]
+    pf_scale = (setup["AC_OPF"] != 1 && mean_pf > 0) ? mean_pf : 1.0
+    inputs_nw["pTrans_Max"] = to_floats(:Line_Max_Flow_MW) / scale_factor * pf_scale
+
+    if setup["AC_OPF"] == 1
+        # Zonal shunt admittances in Siemens, scaled to model power units
+        inputs_nw["Zone_Shunt_Conductance"] = to_floats(:Zone_Shunt_Conductance_Siemens) / scale_factor
+        inputs_nw["Zone_Shunt_Susceptance"] = to_floats(:Zone_Shunt_Susceptance_Siemens) / scale_factor
+
+        # Zone voltage limits in kV
+        inputs_nw["VoltMagMax"] = to_floats(:Zone_Voltage_Magnitude_Maximum)
+        inputs_nw["VoltMagMin"] = to_floats(:Zone_Voltage_Magnitude_Minimum)
+        # Initialize voltage with mean of max and min
+        inputs_nw["Zone_Start_Voltage_kV"] = (inputs_nw["VoltMagMax"] + inputs_nw["VoltMagMin"]) / 2
+
+        # Line impedance values in Ohms
+        inputs_nw["Line_Resistance"] = to_floats(:Line_Resistance_Ohms) * scale_factor
+        inputs_nw["Line_Reactance"] = to_floats(:Line_Reactance_Ohms) * scale_factor
+
+        # Line voltage in kV
+        inputs_nw["Line_Voltage_kV"] = to_floats(:Line_Voltage_kV)
+        inputs_nw["Line_Angle_Limit"] = to_floats(:Angle_Limit_Rad)
+
+        if "Single_Line_MW" in names(network_var)
+            inputs_nw["pSingle_Line_Max"] = to_floats(:Single_Line_MW) / scale_factor
+        else
+            @warn "Column :Single_Line_MW not found in network input. Defaulting to 100.0"
+            inputs_nw["pSingle_Line_Max"] = fill(100.0, nrow(network_var))
+        end
+
+        # Line_Num_Parallel with default 1.0
+        if "Line_Num_Parallel" in names(network_var)
+            inputs_nw["pNum_Parallel"] = to_floats(:Line_Num_Parallel)
+        else
+            @warn "Column :Line_Num_Parallel not found in network input. Defaulting to 1.0"
+            inputs_nw["pNum_Parallel"] = fill(1.0, nrow(network_var))
+        end
+
+        # Line charging susceptance in Siemens, scaled to model power units
+        # From MATPOWER per unit: b_siemens = b_pu * baseMVA / baseKV^2
+        inputs_nw["Line_Susceptance"] = to_floats(:Line_Charging_Susceptance_Siemens) / scale_factor
+
+        # Line connectivity and control devices
+        inputs_nw["Start_Zone"] = to_ints(:Start_Zone)
+        inputs_nw["End_Zone"] = to_ints(:End_Zone)
+        inputs_nw["Tap_Ratios"] = replace(to_floats(:Tap_Ratios), 0.0 => 1.0)
+        inputs_nw["Phase_Shift_Degrees"] = to_floats(:Phase_Shift_Degrees)
+    end
 
     if setup["Trans_Loss_Segments"] == 1
         # Line percentage Loss - valid for case when modeling losses as a fixed percent of absolute value of power flows
@@ -37,10 +86,6 @@ function load_network_data!(setup::Dict, path::AbstractString, inputs_nw::Dict)
 
     ## Inputs for the DC-OPF 
     if setup["DC_OPF"] == 1
-        if setup["NetworkExpansion"] == 1
-            @warn("Because the DC_OPF flag is active, GenX will not allow any transmission capacity expansion. Set the DC_OPF flag to 0 if you want to optimize tranmission capacity expansion.")
-            setup["NetworkExpansion"] = 0
-        end
         println("Reading DC-OPF values...")
         # Transmission line voltage (in kV)
         line_voltage_kV = to_floats(:Line_Voltage_kV)
@@ -52,19 +97,35 @@ function load_network_data!(setup::Dict, path::AbstractString, inputs_nw::Dict)
         # MW = (kV)^2/Ohms 
         inputs_nw["pDC_OPF_coeff"] = ((line_voltage_kV .^ 2) ./ line_reactance_Ohms) /
                                      scale_factor
+
+        # Single-circuit rating for network expansion
+        if "Single_Line_MW" in names(network_var)
+            inputs_nw["pSingle_Line_Max"] = to_floats(:Single_Line_MW) / scale_factor * pf_scale
+        else
+            @warn "Column :Single_Line_MW not found in network input. Defaulting to 100.0"
+            inputs_nw["pSingle_Line_Max"] = fill(100.0, nrow(network_var))
+        end
+
+        # Line_Num_Parallel with default 1.0
+        if "Line_Num_Parallel" in names(network_var)
+            inputs_nw["pNum_Parallel"] = to_floats(:Line_Num_Parallel)
+        else
+            @warn "Column :Line_Num_Parallel not found in network input. Defaulting to 1.0"
+            inputs_nw["pNum_Parallel"] = fill(1.0, nrow(network_var))
+        end
     end
 
     # Maximum possible flow after reinforcement for use in linear segments of piecewise approximation
     inputs_nw["pTrans_Max_Possible"] = inputs_nw["pTrans_Max"]
 
     if setup["NetworkExpansion"] == 1
-        # Read between zone network reinforcement costs per peak MW of capacity added
+        # Reinforcement cost per unit of power-factor-derated capacity
         inputs_nw["pC_Line_Reinforcement"] = to_floats(:Line_Reinforcement_Cost_per_MWyr) /
-                                             scale_factor # convert to million $/GW/yr with objective function in millions
+                                             scale_factor / pf_scale # Scaled cost per unit of capacity per year
         # Maximum reinforcement allowed in MW
         #NOTE: values <0 indicate no expansion possible
         inputs_nw["pMax_Line_Reinforcement"] = map(x -> max(0, x),
-            to_floats(:Line_Max_Reinforcement_MW)) / scale_factor # convert to GW
+            to_floats(:Line_Max_Reinforcement_MW)) / scale_factor * pf_scale # Scale and derate capacity
         inputs_nw["pTrans_Max_Possible"] += inputs_nw["pMax_Line_Reinforcement"]
     end
 
@@ -92,6 +153,9 @@ function load_network_data!(setup::Dict, path::AbstractString, inputs_nw::Dict)
     end
 
     ## Sets and indices for transmission losses and expansion
+    if setup["Lossless"] == 1
+        inputs_nw["pTrans_Loss_Coef"] = zeros(Float64, L)
+    end
     inputs_nw["TRANS_LOSS_SEGS"] = setup["Trans_Loss_Segments"] # Number of segments used in piecewise linear approximations quadratic loss functions
     inputs_nw["LOSS_LINES"] = findall(inputs_nw["pTrans_Loss_Coef"] .!= 0) # Lines for which loss coefficients apply (are non-zero);
 

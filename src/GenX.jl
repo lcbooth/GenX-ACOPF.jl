@@ -38,6 +38,7 @@ using RecursiveArrayTools
 using Statistics
 using HiGHS
 using Logging
+using Ipopt
 
 using PrecompileTools: @compile_workload
 

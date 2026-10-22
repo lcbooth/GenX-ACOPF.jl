@@ -4,7 +4,7 @@ function write_transmission_losses(path::AbstractString,
         EP::Model)
     T = inputs["T"]     # Number of time steps (hours)
     L = inputs["L"]     # Number of transmission lines
-    LOSS_LINES = inputs["LOSS_LINES"]
+    LOSS_LINES = setup["AC_OPF"] == 1 ? (1:L) : inputs["LOSS_LINES"]
     # Power losses for transmission between zones at each time step
     dfTLosses = DataFrame(Line = 1:L)
     tlosses = zeros(L, T)

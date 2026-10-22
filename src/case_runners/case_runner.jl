@@ -10,6 +10,11 @@ function get_default_output_folder(case::AbstractString)
     return joinpath(case, "results")
 end
 
+function get_timestamp_folder(case::AbstractString, prefix::String = "results")
+    timestamp = Dates.format(Dates.now(), "yyyy-mm-dd_HHMMSS")
+    return joinpath(case, prefix, timestamp)
+end
+
 @doc raw"""
     run_genx_case!(case::AbstractString, optimizer::Any=HiGHS.Optimizer)
 
@@ -35,7 +40,7 @@ function run_genx_case!(case::AbstractString, optimizer::Any = HiGHS.Optimizer)
     mysetup = configure_settings(genx_settings, writeoutput_settings) # mysetup dictionary stores settings and GenX-specific parameters
 
     if mysetup["MultiStage"] == 0
-        run_genx_case_simple!(case, mysetup, optimizer)
+        return run_genx_case_simple!(case, mysetup, optimizer)
     else
         run_genx_case_multistage!(case, mysetup, optimizer)
     end
@@ -48,7 +53,16 @@ function time_domain_reduced_files_exist(tdrpath)
     return (tdr_demand && tdr_genvar && tdr_fuels)
 end
 
-function run_genx_case_simple!(case::AbstractString, mysetup::Dict, optimizer::Any)
+@doc raw"""
+    run_genx_case_simple!(case::AbstractString, mysetup::Dict, optimizer::Any; outpath=nothing)
+
+Run a single-stage GenX case and return `(EP, mysetup, myinputs)`.
+
+Writes results to `outpath` or a timestamped folder under `<case>/results/`.
+Saves copies of network, demand, and any reduced time series inputs with the results.
+"""
+function run_genx_case_simple!(case::AbstractString, mysetup::Dict, optimizer::Any;
+        outpath::Union{AbstractString, Nothing} = nothing)
     settings_path = get_settings_path(case)
 
     ### Cluster time series inputs if necessary and if specified by the user
@@ -56,6 +70,7 @@ function run_genx_case_simple!(case::AbstractString, mysetup::Dict, optimizer::A
         TDRpath = joinpath(case, mysetup["TimeDomainReductionFolder"])
         system_path = joinpath(case, mysetup["SystemFolder"])
         prevent_doubled_timedomainreduction(system_path)
+        # Existing TDR files are reused even if inputs have changed
         if !time_domain_reduced_files_exist(TDRpath)
             println("Clustering Time Series Data (Grouped)...")
             cluster_inputs(case, settings_path, mysetup)
@@ -87,13 +102,46 @@ function run_genx_case_simple!(case::AbstractString, mysetup::Dict, optimizer::A
     # Run MGA if the MGA flag is set to 1 else only save the least cost solution
     if has_values(EP)
         println("Writing Output")
-        outputs_path = get_default_output_folder(case)
-        elapsed_time = @elapsed outputs_path = write_outputs(EP,
-            outputs_path,
-            mysetup,
-            myinputs)
+        outputs_path = isnothing(outpath) ? get_timestamp_folder(case) : outpath
+        elapsed_time = @elapsed begin
+            result_path = write_outputs(EP, outputs_path, mysetup, myinputs)
+            !isnothing(result_path) && (outputs_path = result_path)
+        end
+
         println("Time elapsed for writing is")
         println(elapsed_time)
+        println("Output path, ", outputs_path)
+
+        # Save copies of key inputs alongside the results
+        input_path = joinpath(outputs_path, "input_data")
+        mkpath(input_path)
+        system_dir = joinpath(case, mysetup["SystemFolder"])
+        for fname in ["Network.csv", "Demand_data.csv"]
+            src = joinpath(system_dir, fname)
+            if isfile(src)
+                cp(src, joinpath(input_path, fname); force = true)
+            else
+                @warn "Missing file: $src"
+            end
+        end
+
+        if mysetup["AC_OPF"] == 1
+            println("Writing ACOPF Outputs")
+            write_acopf_values(joinpath(outputs_path, "acopf"), myinputs, mysetup, EP)
+        end
+
+        # Copy reduced time series; retain the source folder for other runs
+        if mysetup["TimeDomainReduction"] == 1
+            TDRpath = joinpath(case, mysetup["TimeDomainReductionFolder"])
+            if isdir(TDRpath)
+                tdr_copy_target = joinpath(outputs_path, basename(TDRpath))
+                cp(TDRpath, tdr_copy_target; force = true)
+                println("Copied clustered TDR files to: ", tdr_copy_target)
+            else
+                @warn "No time domain reduction folder found at $TDRpath"
+            end
+        end
+
         if mysetup["ModelingToGenerateAlternatives"] == 1
             println("Starting Model to Generate Alternatives (MGA) Iterations")
             mga(EP, case, mysetup, myinputs)
@@ -104,6 +152,8 @@ function run_genx_case_simple!(case::AbstractString, mysetup::Dict, optimizer::A
             morris(EP, case, mysetup, myinputs, outputs_path, OPTIMIZER)
         end
     end
+
+    return EP, mysetup, myinputs
 end
 
 function run_genx_case_multistage!(case::AbstractString, mysetup::Dict, optimizer::Any)

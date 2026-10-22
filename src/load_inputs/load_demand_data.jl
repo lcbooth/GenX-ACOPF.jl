@@ -19,6 +19,28 @@ function get_demand_dataframe(path)
     return df
 end
 
+function get_reactive_demand_dataframe(path)
+    filename = "Demand_data.csv"
+    deprecated_synonym = "Load_data.csv"
+    df = load_dataframe(path, [filename, deprecated_synonym])
+
+    # update column names
+    old_columns = find_matrix_columns_in_dataframe(df,
+        REACTIVE_DEMAND_COLUMN_PREFIX_DEPRECATED()[1:(end - 1)],
+        prefixseparator = 'z')
+    old_column_symbols = Symbol.(REACTIVE_DEMAND_COLUMN_PREFIX_DEPRECATED() * string(i)
+    for i in old_columns)
+    if length(old_column_symbols) > 0
+        pref_prefix = REACTIVE_DEMAND_COLUMN_PREFIX()
+        dep_prefix = REACTIVE_DEMAND_COLUMN_PREFIX_DEPRECATED()
+        @info "$dep_prefix is deprecated. Use $pref_prefix."
+        new_column_symbols = Symbol.(REACTIVE_DEMAND_COLUMN_PREFIX() * string(i)
+        for i in old_columns)
+        rename!(df, Dict(old_column_symbols .=> new_column_symbols))
+    end
+    return df
+end
+
 DEMAND_COLUMN_PREFIX() = "Demand_MW_z"
 DEMAND_COLUMN_PREFIX_DEPRECATED() = "Load_MW_z"
 
@@ -88,6 +110,51 @@ function load_demand_data!(setup::Dict, path::AbstractString, inputs::Dict)
     inputs["pMax_D_Curtail"] = as_vector(:Max_Demand_Curtailment)
 
     println("Demand (load) data Successfully Read!")
+end
+
+REACTIVE_DEMAND_COLUMN_PREFIX() = "Reactive_Demand_MVAR_z"
+REACTIVE_DEMAND_COLUMN_PREFIX_DEPRECATED() = "Reactive_Load_MVAR_z"
+
+@doc raw"""
+    load_reactive_demand_data!(setup::Dict, path::AbstractString, inputs::Dict)
+
+Read reactive electricity demand (MVAR) for each zone, used when `AC_OPF = 1`.
+Must be called after `load_demand_data!`.
+
+If `MeanPowerFactor > 0`, compute reactive demand from active demand. Zonal power
+factors are sampled uniformly from `MeanPowerFactor ± PowerFactorSpread` with a
+fixed seed and clipped to [0, 1]; `MeanPowerFactor = 1` gives zero reactive demand.
+Otherwise, read the `Reactive_Demand_MVAR_z*` columns of `Demand_data.csv`.
+"""
+function load_reactive_demand_data!(setup::Dict, path::AbstractString, inputs::Dict)
+    Z = inputs["Z"]
+    mean_pf = setup["MeanPowerFactor"]
+    if mean_pf > 0
+        if mean_pf == 1.0
+            pf_z = ones(Z)
+        else
+            # Reproducible zonal power factors using a local RNG
+            rng = MersenneTwister(42)
+            pf_half_spread = setup["PowerFactorSpread"]
+            pf_z = clamp.(mean_pf .+ (rand(rng, Z) .* 2 .- 1) .* pf_half_spread, 0.0, 1.0)
+        end
+        tan_phi = tan.(acos.(pf_z))
+        # pD is T×Z and already in model units
+        inputs["qD"] = inputs["pD"] .* tan_phi'
+        println("Reactive demand computed from MeanPowerFactor = $mean_pf " *
+                "(zone pf range: $(round(minimum(pf_z), digits=4))–$(round(maximum(pf_z), digits=4)))")
+    else
+        TDR_directory = joinpath(path, setup["TimeDomainReductionFolder"])
+        # if TDR is used, my_dir = TDR_directory, else my_dir = "system"
+        my_dir = get_systemfiles_path(setup, TDR_directory, path)
+        reactive_demand_in = get_reactive_demand_dataframe(my_dir)
+
+        scale_factor = setup["ParameterScale"] == 1 ? ModelScalingFactor : 1
+        inputs["qD"] = extract_matrix_from_dataframe(reactive_demand_in,
+            REACTIVE_DEMAND_COLUMN_PREFIX()[1:(end - 1)],
+            prefixseparator = 'z') / scale_factor
+        println("Reactive demand (load) data successfully read!")
+    end
 end
 
 # ensure that the length of demand data exactly matches

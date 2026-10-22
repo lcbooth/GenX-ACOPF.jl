@@ -1,0 +1,6 @@
+linear_solver: mumps
+print_level: 0
+sb: "yes"
+tol: 1.0e-8
+max_iter: 1000
+bound_relax_factor: 0.0

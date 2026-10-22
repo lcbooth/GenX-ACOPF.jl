@@ -33,3 +33,6 @@ test/Logs
 # Test files
 test/TDR/TDR_results_test
 !test/TDR/TDR_results_true
+
+# Local ACOPF sanity check
+/test/local_acopf_check.jl

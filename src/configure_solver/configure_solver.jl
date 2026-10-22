@@ -3,7 +3,12 @@
 Return the name (`String`) of the solver to be used in the GenX.configure\_solver method according to the solver imported by the user. 
 """
 function infer_solver(optimizer::Any)
-    return lowercase(string(parentmodule(optimizer)))
+    raw_name = lowercase(string(parentmodule(optimizer)))
+    # Ipopt.Optimizer is defined in a package extension module
+    if raw_name == "ipoptmathoptinterfaceext"
+        return "ipopt"
+    end
+    return raw_name
 end
 
 @doc raw"""
@@ -14,7 +19,7 @@ This method returns a solver-specific `MathOptInterface.OptimizerWithAttributes`
 # Arguments
 - `solver_settings_path::String`: specifies the path to the directory that contains the settings YAML file for the specified solver.
 - `optimizer::Any`: the optimizer instance to be configured.
-Currently supported solvers include: "Gurobi", "CPLEX", "Clp", "Cbc", or "SCIP"
+Currently supported solvers include: "Gurobi", "CPLEX", "Clp", "Cbc", "SCIP", or "Ipopt"
 
 # Returns
 - `optimizer::MathOptInterface.OptimizerWithAttributes`: the configured optimizer instance.
@@ -30,7 +35,8 @@ function configure_solver(solver_settings_path::String, optimizer::Any; solver_n
         "cplex" => configure_cplex,
         "clp" => configure_clp,
         "cbc" => configure_cbc,
-        "scip" => configure_scip)
+        "scip" => configure_scip,
+        "ipopt" => configure_ipopt)
 
     return configure_functions[solver_name](path, optimizer)
 end

@@ -38,7 +38,21 @@ function default_settings()
         "ResourcePoliciesFolder" => "policy_assignments",
         "SystemFolder" => "system",
         "PoliciesFolder" => "policies",
-        "ObjScale" => 1)
+        "ObjScale" => 1,
+        # AC optimal power flow (see acopf_transmission!)
+        "AC_OPF" => 0,
+        "SlackZone" => 1,                 # reference zone for voltage angles
+        "ThermalPowerFactor" => 0.85,     # minimum PF of synchronous generators
+        "InverterPowerFactor" => 0.95,    # minimum PF of VRE and storage inverters
+        "QInverterDispatchCoupled" => 0,  # 1 = inverter Q limits scale with dispatch, not capacity
+        "QVreDeadZone" => 1,              # 1 = VRE Q capability ramps up with availability
+        "QAvailThreshold" => 0.05,        # VRE availability below which there is no Q capability
+        "QRampEnd" => 0.20,               # VRE availability at which full Q capability is reached
+        "ShuntFraction" => 0.0,           # >0: zone shunt = -fraction × adjacent line charging
+        "MeanPowerFactor" => 0,           # >0: reactive demand from active demand at this PF;
+                                          #     also derates line MVA ratings for transport/DCOPF
+        "PowerFactorSpread" => 0.02,      # half-width of per-zone PF spread around MeanPowerFactor
+        "Lossless" => 0)                  # 1 = zero transmission losses in transport/DCOPF
 end
 
 @doc raw"""

@@ -1,10 +1,45 @@
 <div align="center"> <img src="docs/src/assets/logo_readme.svg"  height ="200"width="1000" alt="GenX.jl"></img></div>
 
-|  **Documentation** | **DOI** |
+> [!NOTE]
+> This fork of [GenX v0.4.5](https://github.com/GenXProject/GenX.jl/releases/tag/v0.4.5)
+> adds AC optimal power flow (`AC_OPF: 1`) and DCOPF with network expansion.
+> Both formulations support expansion through parallel circuits and are nonlinear
+> and nonconvex, solved with Ipopt.
+
+## Using this fork
+
+Clone this repository with Julia 1.9 or later (tested with 1.11 and 1.12).
+`Pkg.add("GenX")` installs upstream GenX without these additions.
+
+```bash
+git clone https://github.com/lcbooth/GenX-ACOPF.jl.git
+cd GenX-ACOPF.jl
+julia --project=. -e 'using Pkg; Pkg.instantiate()'
+```
+
+**Optional: HSL for Ipopt.** HSL MA86 substantially speeds up these cases compared
+with the default MUMPS solver. Download `HSL_jll` with a
+[licence](https://licences.stfc.ac.uk/product/julia-hsl), unpack it, and add it to
+Julia's default environment (without `--project`):
+
+```bash
+julia -e 'using Pkg; Pkg.develop(path="/path/to/HSL_jll.jl")'
+```
+
+Loading `HSL_jll` enables MA86 automatically; the example scripts load it if installed.
+
+See the [Germany](example_systems/12_PyPSA_DE_20_zone/README.md) and
+[ERCOT](example_systems/13_ERCOT_20_zone/README.md) cases for running instructions.
+Inputs are built separately using the [Germany](example_systems/pypsa_data_tools/Germany/README.md)
+and [ERCOT](example_systems/pypsa_data_tools/ERCOT/README.md) build guides.
+Settings are described in [default_settings](src/configure_settings/configure_settings.jl);
+ACOPF network inputs are read in [load_network_data!](src/load_inputs/load_network_data.jl).
+
+|  **Upstream GenX documentation** | **Upstream GenX DOI** |
 |:-------------------------------------------------------------------------------:|:-----------------------------------------------------------------------------------------------:|
 [![Stable](https://img.shields.io/badge/docs-stable-blue.svg)](https://genxproject.github.io/GenX.jl/stable/) [![Dev](https://img.shields.io/badge/docs-dev-blue.svg)](https://genxproject.github.io/GenX.jl/dev) | [![DOI](https://zenodo.org/badge/368957308.svg)](https://zenodo.org/doi/10.5281/zenodo.10846069) 
 
-[![CI](https://github.com/GenXProject/GenX/actions/workflows/ci.yml/badge.svg)](https://github.com/GenXProject/GenX/actions/workflows/ci.yml) [![SciML Code Style](https://img.shields.io/static/v1?label=code%20style&message=SciML&color=9558b2&labelColor=389826)](https://github.com/SciML/SciMLStyle) [![ColPrac: Contributor's Guide on Collaborative Practices for Community Packages](https://img.shields.io/badge/ColPrac-Contributor's%20Guide-blueviolet)](https://github.com/SciML/ColPrac)
+[![CI](https://github.com/lcbooth/GenX-ACOPF.jl/actions/workflows/ci.yml/badge.svg?branch=acopf)](https://github.com/lcbooth/GenX-ACOPF.jl/actions/workflows/ci.yml?query=branch%3Aacopf) [![SciML Code Style](https://img.shields.io/static/v1?label=code%20style&message=SciML&color=9558b2&labelColor=389826)](https://github.com/SciML/SciMLStyle) [![ColPrac: Contributor's Guide on Collaborative Practices for Community Packages](https://img.shields.io/badge/ColPrac-Contributor's%20Guide-blueviolet)](https://github.com/SciML/ColPrac)
 
 ## Overview
 GenX is a highly-configurable, [open source](https://github.com/GenXProject/GenX/blob/main/LICENSE) electricity resource capacity expansion model 

@@ -1,8 +1,10 @@
 name: Test-examples
 
 on:
+  pull_request:
+  workflow_dispatch:
   push:
-    branches: [main, develop]
+    branches: [acopf, main, develop]
     tags: ['*']
   schedule:
     - cron: 21 4 * * * # Run at 12:21am US Eastern time
@@ -11,42 +13,24 @@ jobs:
   test:
     strategy:
       matrix:
-        branch: ["main", "develop"]
         version: ["1.9", "1.10", '1']
+        os: [ubuntu-latest]
+        arch: [x64]
         include:
           - version: '1'
             os: windows-latest
             arch: x64
-    runs-on: ubuntu-latest
+    runs-on: ${{ matrix.os }}
 
     steps:
       - uses: actions/checkout@v4
-        with:
-          ref: ${{ matrix.branch }}
       - uses: julia-actions/setup-julia@latest
         with:
           version: ${{ matrix.version }}
+          arch: ${{ matrix.arch }}
       - uses: julia-actions/cache@v2
       - uses: julia-actions/julia-buildpkg@latest
       - name: Test examples
         shell: julia --project=. --color=yes {0}
         run: |
-          using GenX
-          using Test
-
-          base_path = Base.dirname(Base.dirname(pathof(GenX)))
-          examples_path = joinpath(base_path, "example_systems")
-
-          if !isdir(examples_path)
-              @warn "No example systems found in $examples_path"
-              exit(0)
-          end
-
-          @testset "Test examples" begin 
-            for example_dir in readdir(examples_path, join=true)
-              if isdir(example_dir) && isfile(joinpath(example_dir, "Run.jl"))
-                  @info "Running example in $example_dir"
-                  @test isnothing(run_genx_case!(example_dir))
-              end
-            end
-          end
+          include("test/test_examples.jl")

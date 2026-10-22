@@ -7,10 +7,11 @@ function write_status(path::AbstractString, inputs::Dict, setup::Dict, EP::Model
 
     # https://jump.dev/MathOptInterface.jl/v0.9.10/apireference/#MathOptInterface.TerminationStatusCode
     status = termination_status(EP)
+    barrier_iter = try MOI.get(EP, MOI.BarrierIterations()) catch; missing; end
 
     # Note: Gurobi excludes constants from solver reported objective function value - MIPGap calculated may be erroneous
     if (setup["UCommit"] == 0 || setup["UCommit"] == 2)
-        dfStatus = DataFrame(Status = status, Solve = inputs["solve_time"],
+        dfStatus = DataFrame(Status = status, Solve = inputs["solve_time"], BarrierIterations = barrier_iter,
             Objval = objective_value(EP))
     else
         dfStatus = DataFrame(Status = status, Solve = inputs["solve_time"],

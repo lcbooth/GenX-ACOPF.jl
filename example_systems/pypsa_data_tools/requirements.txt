@@ -1,0 +1,25 @@
+# Python environment used to build the case 12 (Germany) and case 13 (ERCOT) inputs.
+# Python 3.12. Install with: pip install -r requirements.txt
+pypsa==0.30.2
+linopy==0.8.0
+atlite==0.6.1
+cdsapi==0.7.7
+pandas==2.3.3
+numpy==2.4.6
+scipy==1.18.0
+scikit-learn==1.9.0
+xarray==2026.7.0
+netCDF4==1.7.4
+dask==2026.7.1
+geopandas==1.1.4
+shapely==2.1.2
+pyproj==3.7.2
+rasterio==1.5.0
+networkx==3.6.1
+requests==2.34.2
+openpyxl==3.1.5
+tables==3.11.1
+pyarrow==25.0.0
+PyYAML==6.0.3
+pytz==2026.2
+tqdm==4.68.4

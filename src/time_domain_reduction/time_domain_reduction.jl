@@ -101,6 +101,73 @@ function parse_data(myinputs)
 end
 
 @doc raw"""
+    parse_data_ac(myinputs)
+
+Parse ACOPF time series, including reactive demand (`myinputs["qD"]`).
+"""
+function parse_data_ac(myinputs)
+    # Assumes no missing data
+    RESOURCE_ZONES = myinputs["RESOURCE_ZONES"]
+    ZONES = myinputs["R_ZONES"]
+
+    # DEMAND - Demand_data.csv
+    demand_profiles = [myinputs["pD"][:, l] for l in 1:size(myinputs["pD"], 2)]
+    demand_col_names = [DEMAND_COLUMN_PREFIX() * string(l)
+                        for l in 1:size(demand_profiles)[1]]
+    demand_zones = [l for l in 1:size(demand_profiles)[1]]
+    col_to_zone_map = Dict(demand_col_names .=> 1:length(demand_col_names))
+
+    #  REACTIVE DEMAND - Demand_data.csv
+    reactive_profiles = [myinputs["qD"][:, l] for l in 1:size(myinputs["qD"], 2)]
+    reactive_col_names = [REACTIVE_DEMAND_COLUMN_PREFIX() * string(l)
+                        for l in 1:size(reactive_profiles)[1]]
+
+    # CAPACITY FACTORS - Generators_variability.csv
+    solar_profiles = []
+    wind_profiles = []
+    var_profiles = []
+    solar_col_names = []
+    wind_col_names = []
+    var_col_names = []
+    for r in 1:length(RESOURCE_ZONES)
+        if occursin("PV", RESOURCE_ZONES[r]) || occursin("pv", RESOURCE_ZONES[r]) ||
+           occursin("Pv", RESOURCE_ZONES[r]) || occursin("Solar", RESOURCE_ZONES[r]) ||
+           occursin("SOLAR", RESOURCE_ZONES[r]) || occursin("solar", RESOURCE_ZONES[r])
+            push!(solar_col_names, RESOURCE_ZONES[r])
+            push!(solar_profiles, myinputs["pP_Max"][r, :])
+        elseif occursin("Wind", RESOURCE_ZONES[r]) || occursin("WIND", RESOURCE_ZONES[r]) ||
+               occursin("wind", RESOURCE_ZONES[r])
+            push!(wind_col_names, RESOURCE_ZONES[r])
+            push!(wind_profiles, myinputs["pP_Max"][r, :])
+        end
+        push!(var_col_names, RESOURCE_ZONES[r])
+        push!(var_profiles, myinputs["pP_Max"][r, :])
+        col_to_zone_map[RESOURCE_ZONES[r]] = ZONES[r]
+    end
+
+    # FUEL - Fuels_data.csv
+    fuel_col_names = string.(myinputs["fuels"])
+    fuel_profiles = []
+    AllFuelsConst = true
+    for f in 1:length(fuel_col_names)
+        push!(fuel_profiles, myinputs["fuel_costs"][fuel_col_names[f]])
+        if AllFuelsConst && (minimum(myinputs["fuel_costs"][fuel_col_names[f]]) !=
+            maximum(myinputs["fuel_costs"][fuel_col_names[f]]))
+            AllFuelsConst = false
+        end
+    end
+
+    all_col_names = [demand_col_names; reactive_col_names; var_col_names; fuel_col_names]
+    all_profiles = [demand_profiles..., reactive_profiles..., var_profiles..., fuel_profiles...]
+    return demand_col_names, reactive_col_names,
+    var_col_names, solar_col_names, wind_col_names, fuel_col_names,
+    all_col_names,
+    demand_profiles, reactive_profiles, var_profiles, solar_profiles, wind_profiles, fuel_profiles,
+    all_profiles,
+    col_to_zone_map, AllFuelsConst
+end
+
+@doc raw"""
     parse_mutli_period_data(inputs_dict)
 
 Get demand, solar, wind, and other curves from multi-stage input data.
@@ -227,9 +294,26 @@ function get_worst_period_idx(R)
 end
 
 @doc raw"""
-    cluster(ClusterMethod, ClusteringInputDF, NClusters, nIters, v=false, random=true)
+    drop_reactive_demand_cols!(df)
+
+Remove `Reactive_Demand_MVAR_z*` columns before writing demand for non-ACOPF runs.
+"""
+function drop_reactive_demand_cols!(df::DataFrame)
+    pref = REACTIVE_DEMAND_COLUMN_PREFIX()
+    qcols = [c for c in names(df) if startswith(String(c), pref)]
+    if !isempty(qcols)
+        select!(df, Not(qcols))
+    end
+    return df
+end
+
+@doc raw"""
+    cluster(ClusterMethod, ClusteringInputDF, NClusters, nIters, v=false, random=true; seed=nothing)
 
 Get representative periods using cluster centers from kmeans or kmedoids.
+
+If `seed` is given, seed the initial clustering with `seed` and repetition `i` with
+`seed + i`. Otherwise, if `random` is false, use the default seed for each repetition.
 
 K-Means: [https://juliastats.org/Clustering.jl/dev/kmeans.html](https://juliastats.org/Clustering.jl/dev/kmeans.html)
 
@@ -240,15 +324,24 @@ function cluster(ClusterMethod,
         NClusters,
         nIters,
         v = false,
-        random = true)
+        random = true;
+        seed = nothing)
+    function reseed!(i)
+        if !isnothing(seed)
+            Random.seed!(seed + i)
+        elseif !random && i > 0
+            Random.seed!(SEED)
+        end
+    end
+
     if ClusterMethod == "kmeans"
         DistMatrix = pairwise(Euclidean(), Matrix(ClusteringInputDF), dims = 2)
+
+        reseed!(0)
         R = kmeans(Matrix(ClusteringInputDF), NClusters, init = :kmcen)
 
         for i in 1:nIters
-            if !random
-                Random.seed!(SEED)
-            end
+            reseed!(i)
             R_i = kmeans(Matrix(ClusteringInputDF), NClusters)
 
             if R_i.totalcost < R.totalcost
@@ -273,12 +366,12 @@ function cluster(ClusterMethod,
 
     elseif ClusterMethod == "kmedoids"
         DistMatrix = pairwise(Euclidean(), Matrix(ClusteringInputDF), dims = 2)
+
+        reseed!(0)
         R = kmedoids(DistMatrix, NClusters, init = :kmcen)
 
         for i in 1:nIters
-            if !random
-                Random.seed!(SEED)
-            end
+            reseed!(i)
             R_i = kmedoids(DistMatrix, NClusters)
             if R_i.totalcost < R.totalcost
                 R = R_i
@@ -294,7 +387,7 @@ function cluster(ClusterMethod,
         M = R.medoids # get the cluster centers - M for Medoids
     else
         println("INVALID ClusterMethod. Select kmeans or kmedoids. Running kmeans instead.")
-        return cluster("kmeans", ClusteringInputDF, NClusters, nIters, v, random)
+        return cluster("kmeans", ClusteringInputDF, NClusters, nIters, v, random; seed = seed)
     end
     return [R, A, W, M, DistMatrix]
 end
@@ -626,6 +719,11 @@ In Demand_data.csv, include the following:
     Fuels\_data\_clustered.csv with reshaped fuel prices based on the number and size of the
     representative weeks, assuming a constant time series of fuel prices with length equal to the
     number of timesteps in the raw input data.
+ - Seed - Optional integer seed for clustering (see `cluster`).
+    The environment variable `GENX_TDR_SEED` overrides this setting.
+ - PeriodMap - Optional path to a saved Period\_map.csv, absolute or relative to the case
+    folder. Reuses representative periods and assignments instead of clustering, avoiding
+    differences between machines. Requires the same input data and TimestepsPerRepPeriod.
  -  MultiStageConcatenate - (Only considered if MultiStage = 1 in genx_settings.yml)
     If 1, this designates that the model should time domain reduce the input data
      of all model stages together. Else if 0, [still in development] the model will time domain reduce only
@@ -669,6 +767,10 @@ function cluster_inputs(inpath,
     DemandWeight = myTDRsetup["DemandWeight"]
     WeightTotal = myTDRsetup["WeightTotal"]
     ClusterFuelPrices = myTDRsetup["ClusterFuelPrices"]
+
+    # GENX_TDR_SEED overrides the Seed setting
+    seed = haskey(ENV, "GENX_TDR_SEED") ? parse(Int, ENV["GENX_TDR_SEED"]) :
+           get(myTDRsetup, "Seed", nothing)
     TimeDomainReductionFolder = mysetup["TimeDomainReductionFolder"]
 
     MultiStage = mysetup["MultiStage"]
@@ -755,15 +857,44 @@ function cluster_inputs(inpath,
         ZONES = myinputs["R_ZONES"]
         # Parse input data into useful structures divided by type (demand, wind, solar, fuel, groupings thereof, etc.)
         # TO DO LATER: Replace these with collections of col_names, profiles, zones
-        demand_col_names, var_col_names, solar_col_names, wind_col_names, fuel_col_names, all_col_names,
-        demand_profiles, var_profiles, solar_profiles, wind_profiles, fuel_profiles, all_profiles,
-        col_to_zone_map, AllFuelsConst = parse_data(myinputs)
+        if mysetup["AC_OPF"] == 1
+            demand_col_names, reactive_col_names, var_col_names, solar_col_names, wind_col_names, fuel_col_names, all_col_names,
+            demand_profiles, reactive_profiles, var_profiles, solar_profiles, wind_profiles, fuel_profiles, all_profiles,
+            col_to_zone_map, AllFuelsConst = parse_data_ac(myinputs)
+
+            # Exclude reactive demand from clustering features
+            clust_col_names = [demand_col_names; var_col_names; fuel_col_names]
+            clust_profiles  = [demand_profiles..., var_profiles..., fuel_profiles...]
+
+            # Omit reactive demand from output when it is computed from active demand
+            if get(mysetup, "MeanPowerFactor", 0) > 0
+                reactive_col_names = String[]
+                reactive_profiles = Vector[]
+                all_col_names = [demand_col_names; var_col_names; fuel_col_names]
+                all_profiles  = [demand_profiles..., var_profiles..., fuel_profiles...]
+            end
+
+        else
+            demand_col_names, var_col_names, solar_col_names, wind_col_names, fuel_col_names, all_col_names,
+            demand_profiles, var_profiles, solar_profiles, wind_profiles, fuel_profiles, all_profiles,
+            col_to_zone_map, AllFuelsConst = parse_data(myinputs)
+
+            clust_col_names = all_col_names
+            clust_profiles  = all_profiles
+        end
     end
     if v
         println()
     end
 
     # Remove Constant Columns - Add back later in final output
+    # For clustering data
+    clust_profiles, clust_col_names, ConstData_clust, ConstCols_clust, ConstIdx_clust = RemoveConstCols(
+        clust_profiles,
+        clust_col_names,
+        v)
+
+    # For all data
     all_profiles, all_col_names, ConstData, ConstCols, ConstIdx = RemoveConstCols(
         all_profiles,
         all_col_names,
@@ -776,17 +907,25 @@ function cluster_inputs(inpath,
     end
 
     # Put it together!
-    InputData = DataFrame(Dict(all_col_names[c] => all_profiles[c]
-    for c in 1:length(all_col_names)))
+    # clustering hourly data
+    InputData = DataFrame(Dict(clust_col_names[c] => clust_profiles[c] for c in 1:length(clust_col_names)))
     InputData = convert.(Float64, InputData)
+
+    # output hourly data
+    InputData_all = DataFrame(Dict(all_col_names[c] => all_profiles[c] for c in 1:length(all_col_names)))
+    InputData_all = convert.(Float64, InputData_all)
+
     if v
         println("Demand (MW) and Capacity Factor Profiles: ")
         println(describe(InputData))
         println()
     end
-    OldColNames = names(InputData)
-    NewColNames = [Symbol.(OldColNames); :GrpWeight]
-    Nhours = nrow(InputData) # Timesteps
+
+    OldColNames = names(InputData)          # clustering columns
+    OldColNames_all = names(InputData_all)  # output columns (includes qD in AC)
+    NewColNames = [Symbol.(OldColNames_all); :GrpWeight]
+
+    Nhours = nrow(InputData)
     Ncols = length(NewColNames) - 1
 
     ##### Step 1: Normalize or standardize all demand, renewables, and fuel data / optionally scale with DemandWeight
@@ -840,6 +979,7 @@ function cluster_inputs(inpath,
         println("Total Subperiods in the data set: ", NumDataPoints)
     end
     InputData[:, :Group] .= (1:Nhours) .÷ (TimestepsPerRepPeriod + 0.0001) .+ 1    # Group col identifies the subperiod ID of each hour (e.g., all hours in week 2 have Group=2 if using TimestepsPerRepPeriod=168)
+    InputData_all[:, :Group] .= InputData[:, :Group]
 
     # Group by period (e.g., week)
     cgdf = combine(groupby(InputData, :Group), [c .=> sum for c in OldColNames])
@@ -956,6 +1096,11 @@ function cluster_inputs(inpath,
     ModifiedDataNormalized = DataFrame(Dict(Symbol(i) => DFsToConcatNorm[i]
     for i in 1:NumDataPoints))
 
+    DFsToConcat_all = [stack(InputData_all[isequal.(InputData_all.Group, w), :], OldColNames_all)[!, :value]
+                for w in 1:NumDataPoints if w <= NumDataPoints]
+    ModifiedData_all = DataFrame(Dict(Symbol(i) => DFsToConcat_all[i] for i in 1:NumDataPoints))
+
+
     # Remove extreme periods from normalized data before clustering
     NClusters = MinPeriods
     if UseExtremePeriods == 1
@@ -974,116 +1119,134 @@ function cluster_inputs(inpath,
         ClusteringInputDF = ModifiedDataNormalized
     end
 
-    ##### STEP 3: Clustering
-    cluster_results = []
+    period_map_file = get(myTDRsetup, "PeriodMap", nothing)
+    if !isnothing(period_map_file)
+        ##### STEPS 3-4 (alternative): reuse saved representative period assignments
+        period_map_path = isabspath(period_map_file) ? period_map_file :
+                          joinpath(inpath, period_map_file)
+        println("Using representative periods from $period_map_path (no clustering)")
+        GivenPeriodMap = CSV.read(period_map_path, DataFrame)
+        if nrow(GivenPeriodMap) != NumDataPoints
+            error("$period_map_path has $(nrow(GivenPeriodMap)) periods; the input data has " *
+                  "$NumDataPoints periods of $TimestepsPerRepPeriod time steps.")
+        end
+        M = sort(unique(GivenPeriodMap.Rep_Period))
+        A = [findfirst(==(r), M) for r in GivenPeriodMap.Rep_Period]
+        W = [count(==(i), A) for i in eachindex(M)]
+        NClusters = length(M)
+        R = nothing
+    else
+        ##### STEP 3: Clustering
+        cluster_results = []
 
-    # Cluster once regardless of iteration decisions
-    push!(cluster_results,
-        cluster(ClusterMethod, ClusteringInputDF, NClusters, nReps, v, random))
+        # Cluster once regardless of iteration decisions
+        push!(cluster_results,
+            cluster(ClusterMethod, ClusteringInputDF, NClusters, nReps, v, random; seed = seed))
 
-    # Iteratively add worst periods as extreme periods OR increment number of clusters k
-    #    until threshold is met or maximum periods are added (If chosen in inputs)
-    if (Iterate == 1)
-        while (!check_condition(Threshold,
-            last(cluster_results)[1],
-            OldColNames,
-            ScalingMethod,
-            TimestepsPerRepPeriod)) & ((length(ExtremeWksList) + NClusters) < MaxPeriods)
-            if IterateMethod == "cluster"
-                if v
-                    println("Adding a new Cluster! ")
+        # Iteratively add worst periods as extreme periods OR increment number of clusters k
+        #    until threshold is met or maximum periods are added (If chosen in inputs)
+        if (Iterate == 1)
+            while (!check_condition(Threshold,
+                last(cluster_results)[1],
+                OldColNames,
+                ScalingMethod,
+                TimestepsPerRepPeriod)) & ((length(ExtremeWksList) + NClusters) < MaxPeriods)
+                if IterateMethod == "cluster"
+                    if v
+                        println("Adding a new Cluster! ")
+                    end
+                    NClusters += 1
+                    push!(cluster_results,
+                        cluster(ClusterMethod, ClusteringInputDF, NClusters, nReps, v, random; seed = seed))
+                elseif (IterateMethod == "extreme") & (UseExtremePeriods == 1)
+                    if v
+                        println("Adding a new Extreme Period! ")
+                    end
+                    worst_period_idx = get_worst_period_idx(last(cluster_results)[1])
+                    removed_period = string(names(ClusteringInputDF)[worst_period_idx])
+                    select!(ClusteringInputDF, Not(worst_period_idx))
+                    push!(ExtremeWksList, parse(Int, removed_period))
+                    if v
+                        println(worst_period_idx, " (", removed_period, ") ", ExtremeWksList)
+                    end
+                    push!(cluster_results,
+                        cluster(ClusterMethod, ClusteringInputDF, NClusters, nReps, v, random; seed = seed))
+                elseif IterateMethod == "extreme"
+                    println("INVALID IterateMethod ",
+                        IterateMethod,
+                        " because UseExtremePeriods is off. Set to 1 if you wish to add extreme periods.")
+                    break
+                else
+                    println("INVALID IterateMethod ",
+                        IterateMethod,
+                        ". Choose 'cluster' or 'extreme'.")
+                    break
                 end
-                NClusters += 1
-                push!(cluster_results,
-                    cluster(ClusterMethod, ClusteringInputDF, NClusters, nReps, v, random))
-            elseif (IterateMethod == "extreme") & (UseExtremePeriods == 1)
-                if v
-                    println("Adding a new Extreme Period! ")
-                end
-                worst_period_idx = get_worst_period_idx(last(cluster_results)[1])
-                removed_period = string(names(ClusteringInputDF)[worst_period_idx])
-                select!(ClusteringInputDF, Not(worst_period_idx))
-                push!(ExtremeWksList, parse(Int, removed_period))
-                if v
-                    println(worst_period_idx, " (", removed_period, ") ", ExtremeWksList)
-                end
-                push!(cluster_results,
-                    cluster(ClusterMethod, ClusteringInputDF, NClusters, nReps, v, random))
-            elseif IterateMethod == "extreme"
-                println("INVALID IterateMethod ",
-                    IterateMethod,
-                    " because UseExtremePeriods is off. Set to 1 if you wish to add extreme periods.")
-                break
-            else
-                println("INVALID IterateMethod ",
-                    IterateMethod,
-                    ". Choose 'cluster' or 'extreme'.")
-                break
+            end
+            if v && (length(ExtremeWksList) + NClusters == MaxPeriods)
+                println("Stopped iterating by hitting the maximum number of periods.")
+            elseif v
+                println("Stopped by meeting the accuracy threshold.")
             end
         end
-        if v && (length(ExtremeWksList) + NClusters == MaxPeriods)
-            println("Stopped iterating by hitting the maximum number of periods.")
-        elseif v
-            println("Stopped by meeting the accuracy threshold.")
-        end
-    end
 
-    # Interpret Final Clustering Result
-    R = last(cluster_results)[1]  # Cluster Object
-    A = last(cluster_results)[2]  # Assignments
-    W = last(cluster_results)[3]  # Weights
-    M = last(cluster_results)[4]  # Centers or Medoids
-    DistMatrix = last(cluster_results)[5]  # Pairwise distances
-    if v
-        println("Total Groups Assigned to Each Cluster: ", W)
-        println("Sum Cluster Weights: ", sum(W))
-        println("Representative Periods: ", M)
-    end
-
-    ##### Step 4: Aggregation
-    # Set clustering outputs in correct numeric order.
-    # Add the subperiods corresponding to the extreme periods back into the data.
-    # Rescale weights to total user-specified number of hours (e.g., 8760 for one year).
-    # If DemandExtremePeriod=false (because we don't want to change peak demand day), rescale demand to ensure total demand is equal.
-
-    ### K-means/medoids returns indices from DistMatrix as its medoids.
-    #   This does not account for missing extreme weeks nor "alphabetical" ordering of numeric columns (i.e., 1, 10, 11, ...).
-    #   This is corrected retroactively here.
-    #   Optional to do later: reorder ClusterInputDF numerically before clustering instead
-
-    # ClusterInputDF Reframing of Centers/Medoids (i.e., alphabetical as opposed to indices, same order)
-    M = [parse(Int64, string(names(ClusteringInputDF)[i])) for i in M]
-    if v
-        println("Fixed M: ", M)
-    end
-
-    # ClusterInputDF Ordering of All Periods (i.e., alphabetical as opposed to indices)
-    A_Dict = Dict()   # States index of representative period within M for each period a in A
-    M_Dict = Dict()   # States representative period m for each period a in A
-    for i in 1:length(A)
-        A_Dict[parse(Int64, string(names(ClusteringInputDF)[i]))] = A[i]
-        M_Dict[parse(Int64, string(names(ClusteringInputDF)[i]))] = M[A[i]]
-    end
-
-    # Add extreme periods into the clustering result with # of occurences = 1 for each
-    ExtremeWksList = sort(ExtremeWksList)
-    if UseExtremePeriods == 1
+        # Interpret Final Clustering Result
+        R = last(cluster_results)[1]  # Cluster Object
+        A = last(cluster_results)[2]  # Assignments
+        W = last(cluster_results)[3]  # Weights
+        M = last(cluster_results)[4]  # Centers or Medoids
+        DistMatrix = last(cluster_results)[5]  # Pairwise distances
         if v
-            println("Extreme Periods: ", ExtremeWksList)
+            println("Total Groups Assigned to Each Cluster: ", W)
+            println("Sum Cluster Weights: ", sum(W))
+            println("Representative Periods: ", M)
         end
-        M = [M; ExtremeWksList]
-        A_idx = NClusters + 1
-        for w in ExtremeWksList
-            A_Dict[w] = A_idx
-            M_Dict[w] = w
-            push!(W, 1)
-            A_idx += 1
-        end
-        NClusters += length(ExtremeWksList) #NClusers from this point forward is the ending number of periods
-    end
 
-    # Recreate A in numeric order (as opposed to ClusterInputDF order)
-    A = [A_Dict[i] for i in 1:(length(A) + length(ExtremeWksList))]
+        ##### Step 4: Aggregation
+        # Set clustering outputs in correct numeric order.
+        # Add the subperiods corresponding to the extreme periods back into the data.
+        # Rescale weights to total user-specified number of hours (e.g., 8760 for one year).
+        # If DemandExtremePeriod=false (because we don't want to change peak demand day), rescale demand to ensure total demand is equal.
+
+        ### K-means/medoids returns indices from DistMatrix as its medoids.
+        #   This does not account for missing extreme weeks nor "alphabetical" ordering of numeric columns (i.e., 1, 10, 11, ...).
+        #   This is corrected retroactively here.
+        #   Optional to do later: reorder ClusterInputDF numerically before clustering instead
+
+        # ClusterInputDF Reframing of Centers/Medoids (i.e., alphabetical as opposed to indices, same order)
+        M = [parse(Int64, string(names(ClusteringInputDF)[i])) for i in M]
+        if v
+            println("Fixed M: ", M)
+        end
+
+        # ClusterInputDF Ordering of All Periods (i.e., alphabetical as opposed to indices)
+        A_Dict = Dict()   # States index of representative period within M for each period a in A
+        M_Dict = Dict()   # States representative period m for each period a in A
+        for i in 1:length(A)
+            A_Dict[parse(Int64, string(names(ClusteringInputDF)[i]))] = A[i]
+            M_Dict[parse(Int64, string(names(ClusteringInputDF)[i]))] = M[A[i]]
+        end
+
+        # Add extreme periods into the clustering result with # of occurences = 1 for each
+        ExtremeWksList = sort(ExtremeWksList)
+        if UseExtremePeriods == 1
+            if v
+                println("Extreme Periods: ", ExtremeWksList)
+            end
+            M = [M; ExtremeWksList]
+            A_idx = NClusters + 1
+            for w in ExtremeWksList
+                A_Dict[w] = A_idx
+                M_Dict[w] = w
+                push!(W, 1)
+                A_idx += 1
+            end
+            NClusters += length(ExtremeWksList) #NClusers from this point forward is the ending number of periods
+        end
+
+        # Recreate A in numeric order (as opposed to ClusterInputDF order)
+        A = [A_Dict[i] for i in 1:(length(A) + length(ExtremeWksList))]
+    end
 
     N = W  # Keep cluster version of weights stored as N, number of periods represented by RP
 
@@ -1109,12 +1272,18 @@ function cluster_inputs(inpath,
 
     # Get Symbol-version of column names by type for later analysis
     DemandCols = Symbol.(demand_col_names)
+    # Retain reactive demand columns not removed by RemoveConstCols
+    surviving_all_col_names = Set(all_col_names)
+    ReactiveDemandCols = (mysetup["AC_OPF"] == 1) ?
+        Symbol.([c for c in reactive_col_names if c in surviving_all_col_names]) : Symbol[]
+    DemandColsWrite = vcat(DemandCols, ReactiveDemandCols)
+
     VarCols = [Symbol(var_col_names[i]) for i in 1:length(var_col_names)]
     FuelCols = [Symbol(fuel_col_names[i]) for i in 1:length(fuel_col_names)]
     ConstCol_Syms = [Symbol(ConstCols[i]) for i in 1:length(ConstCols)]
 
     # Cluster Ouput: The original data at the medoids/centers
-    ClusterOutputData = ModifiedData[:, Symbol.(M)]
+    ClusterOutputData = ModifiedData_all[:, Symbol.(M)]
 
     # Get zone-wise demand multipliers for later scaling in order for weighted-representative-total-zonal demand to equal original total-zonal demand
     #  (Only if we don't have demand-related extreme periods because we don't want to change peak demand periods)
@@ -1142,7 +1311,7 @@ function cluster_inputs(inpath,
         gvDF = DataFrame(Dict(NewColNames[i] => ClusterOutputData[!, m][(TimestepsPerRepPeriod * (i - 1) + 1):(TimestepsPerRepPeriod * i)]
         for i in 1:Ncols if (Symbol(NewColNames[i]) in VarCols)))
         dmDF = DataFrame(Dict(NewColNames[i] => ClusterOutputData[!, m][(TimestepsPerRepPeriod * (i - 1) + 1):(TimestepsPerRepPeriod * i)]
-        for i in 1:Ncols if (Symbol(NewColNames[i]) in DemandCols)))
+        for i in 1:Ncols if (Symbol(NewColNames[i]) in DemandColsWrite)))
         if IncludeFuel
             fpDF = DataFrame(Dict(NewColNames[i] => ClusterOutputData[!, m][(TimestepsPerRepPeriod * (i - 1) + 1):(TimestepsPerRepPeriod * i)]
             for i in 1:Ncols if (Symbol(NewColNames[i]) in FuelCols)))
@@ -1158,7 +1327,7 @@ function cluster_inputs(inpath,
                 gvDF[!, Symbol(ConstCols[c])] .= ConstData[c][1]
             elseif Symbol(ConstCols[c]) in FuelCols
                 fpDF[!, Symbol(ConstCols[c])] .= ConstData[c][1]
-            elseif Symbol(ConstCols[c]) in DemandCols
+            elseif Symbol(ConstCols[c]) in DemandColsWrite
                 dmDF[!, Symbol(ConstCols[c])] .= ConstData[c][1]
             end
         end
@@ -1168,13 +1337,26 @@ function cluster_inputs(inpath,
 
         # Scale Demand using previously identified multipliers
         #   Scale dmDF but not rpDF which compares to input data but is not written to file.
-        for demandcol in DemandCols
-            if demandcol ∉ ConstCol_Syms
-                if !DemandExtremePeriod
-                    dmDF[!, demandcol] .*= demand_mults[demandcol]
+        if !DemandExtremePeriod
+            for pcol in DemandCols
+                if pcol ∉ ConstCol_Syms
+                    dmDF[!, pcol] .*= demand_mults[pcol]
+                end
+            end
+
+            # Apply active demand multipliers to any reactive demand columns
+            if mysetup["AC_OPF"] == 1 && !isempty(ReactiveDemandCols)
+                @assert length(ReactiveDemandCols) == length(DemandCols)
+                for i in eachindex(DemandCols)
+                    pcol = DemandCols[i]
+                    qcol = ReactiveDemandCols[i]
+                    if qcol ∉ ConstCol_Syms
+                        dmDF[!, qcol] .*= demand_mults[pcol]
+                    end
                 end
             end
         end
+
 
         rpDF[!, :GrpWeight] .= W[m]
         rpDF[!, :Cluster] .= M[m]
@@ -1254,18 +1436,21 @@ function cluster_inputs(inpath,
                 demand_in = get_demand_dataframe(
                     joinpath(inpath, "inputs", "inputs_p$per"),
                     mysetup["SystemFolder"])
+                if mysetup["AC_OPF"] != 1
+                    drop_reactive_demand_cols!(demand_in)
+                end
                 demand_in[!, :Sub_Weights] = demand_in[!, :Sub_Weights] * 1.0
                 demand_in[1:length(Stage_Weights[per]), :Sub_Weights] .= Stage_Weights[per]
                 demand_in[!, :Rep_Periods][1] = length(Stage_Weights[per])
                 demand_in[!, :Timesteps_per_Rep_Period][1] = TimestepsPerRepPeriod
-                select!(demand_in, Not(DemandCols))
+                select!(demand_in, Not(DemandColsWrite))
                 select!(demand_in, Not(:Time_Index))
                 Time_Index_M = Union{Int64, Missings.Missing}[missing
                                                               for i in 1:size(demand_in, 1)]
                 Time_Index_M[1:size(DMOutputData, 1)] = 1:size(DMOutputData, 1)
                 demand_in[!, :Time_Index] .= Time_Index_M
 
-                for c in DemandCols
+                for c in DemandColsWrite
                     new_col = Union{Float64, Missings.Missing}[missing
                                                                for i in 1:size(demand_in, 1)]
                     new_col[1:size(DMOutputData, 1)] = DMOutputData[!, c]
@@ -1384,18 +1569,21 @@ function cluster_inputs(inpath,
                 "inputs",
                 input_stage_directory,
                 mysetup["SystemFolder"]))
+            if mysetup["AC_OPF"] != 1
+                drop_reactive_demand_cols!(demand_in)
+            end
             demand_in[!, :Sub_Weights] = demand_in[!, :Sub_Weights] * 1.0
             demand_in[1:length(W), :Sub_Weights] .= W
             demand_in[!, :Rep_Periods][1] = length(W)
             demand_in[!, :Timesteps_per_Rep_Period][1] = TimestepsPerRepPeriod
-            select!(demand_in, Not(DemandCols))
+            select!(demand_in, Not(DemandColsWrite))
             select!(demand_in, Not(:Time_Index))
             Time_Index_M = Union{Int64, Missings.Missing}[missing
                                                           for i in 1:size(demand_in, 1)]
             Time_Index_M[1:size(DMOutputData, 1)] = 1:size(DMOutputData, 1)
             demand_in[!, :Time_Index] .= Time_Index_M
 
-            for c in DemandCols
+            for c in DemandColsWrite
                 new_col = Union{Float64, Missings.Missing}[missing
                                                            for i in 1:size(demand_in, 1)]
                 new_col[1:size(DMOutputData, 1)] = DMOutputData[!, c]
@@ -1521,17 +1709,20 @@ function cluster_inputs(inpath,
         ### TDR_Results/Demand_data.csv
         system_path = joinpath(inpath, mysetup["SystemFolder"])
         demand_in = get_demand_dataframe(system_path)
+        if mysetup["AC_OPF"] != 1
+            drop_reactive_demand_cols!(demand_in)
+        end
         demand_in[!, :Sub_Weights] = demand_in[!, :Sub_Weights] * 1.0
         demand_in[1:length(W), :Sub_Weights] .= W
         demand_in[!, :Rep_Periods][1] = length(W)
         demand_in[!, :Timesteps_per_Rep_Period][1] = TimestepsPerRepPeriod
-        select!(demand_in, Not(DemandCols))
+        select!(demand_in, Not(DemandColsWrite))
         select!(demand_in, Not(:Time_Index))
         Time_Index_M = Union{Int64, Missings.Missing}[missing for i in 1:size(demand_in, 1)]
         Time_Index_M[1:size(DMOutputData, 1)] = 1:size(DMOutputData, 1)
         demand_in[!, :Time_Index] .= Time_Index_M
 
-        for c in DemandCols
+        for c in DemandColsWrite
             new_col = Union{Float64, Missings.Missing}[missing
                                                        for i in 1:size(demand_in, 1)]
             new_col[1:size(DMOutputData, 1)] = DMOutputData[!, c]

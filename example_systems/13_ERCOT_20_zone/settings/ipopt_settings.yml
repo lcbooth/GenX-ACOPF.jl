@@ -1,0 +1,10 @@
+# Ipopt-specific solver settings (https://coin-or.github.io/Ipopt/OPTIONS.html)
+# linear_solver defaults to ma86 when HSL_jll is loaded, otherwise mumps (see configure_ipopt)
+tol: 1.0e-06
+max_iter: 5000
+mu_strategy: adaptive
+
+# Full solver log, including problem size and solve trace
+# Run scripts move this into each run's own results/ folder afterward.
+output_file: "ipopt_solve.log"
+file_print_level: 5

@@ -1,0 +1,70 @@
+run:
+  name: "test-elec-de-20"
+  shared_resources:
+    policy: false
+  shared_cutouts: true
+  use_shadow_directory: false
+
+scenario:
+  clusters:
+    - 20
+  opts:
+    - ""
+
+countries: ['DE']
+
+electricity:
+  base_network: osm-prebuilt
+  transmission_projects:
+    enable: false
+  conventional_carriers: [nuclear, oil, OCGT, CCGT, coal, lignite, geothermal, biomass]
+  renewable_carriers: [solar, solar-hsat, onwind, offwind-ac, offwind-dc, offwind-float, hydro]
+  extendable_carriers:
+    Generator: [solar, solar-hsat, onwind, offwind-ac, offwind-dc, offwind-float, hydro, OCGT, CCGT, geothermal, biomass]
+    StorageUnit: [battery] # battery, H2
+    Store: []
+    Link: [] # H2 pipeline
+  estimate_renewable_capacities:
+    enable: true
+    from_gem: true
+    year: 2023
+    expansion_limit: false
+    technology_mapping:
+      Offshore: offwind-ac
+      Onshore: onwind
+      PV: solar
+
+snapshots:
+  start: "2023-01-01"
+  end: "2023-12-31"
+
+transformers:
+  x: 0.1
+  s_nom: 2000.
+  type: ''
+  
+lines:
+  dynamic_line_rating:
+    activate: false
+
+clustering:
+  # exclude_carriers: ['oil', 'lignite', 'biomass', 'hydro', 'ror', 'PHS', 'battery', 'H2', 'battery charger', 'battery discharger', 'H2 fuel cell', 'H2 electrolysis']
+  temporal:
+    resolution_elec: 24h
+
+solving:
+  solver:
+    name: highs
+    options: highs-simplex
+
+  check_objective:
+    enable: false
+
+atlite:
+  default_cutout: europe-2023-sarah3-era5
+  # cutouts:
+  #   de-01-2023-era5:
+  #     module: era5
+  #     x: [5, 15.5]
+  #     y: [47, 56]
+  #     time: ["2023-01-01", "2023-01-03"]

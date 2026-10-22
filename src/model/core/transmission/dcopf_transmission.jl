@@ -1,12 +1,16 @@
 @doc raw"""
     dcopf_transmission!(EP::Model, inputs::Dict, setup::Dict)
-The addtional constraints imposed upon the line flows in the case of DC-OPF are as follows:
+The additional constraints imposed upon the line flows in the case of DC-OPF are as follows:
 For the definition of the line flows, in terms of the voltage phase angles:
 ```math
 \begin{aligned}
         & \Phi_{l,t}=\mathcal{B}_{l} \times (\sum_{z\in \mathcal{Z}}{(\varphi^{map}_{l,z} \times \theta_{z,t})}) \quad \forall l \in \mathcal{L}, \; \forall t  \in \mathcal{T}\\
 \end{aligned}
 ```
+The coefficient $\mathcal{B}_{l}$ scales with the number of parallel circuits.
+With network expansion, this number depends on available transmission capacity,
+making the power flow constraint bilinear.
+
 For imposing the constraint of maximum allowed voltage phase angle difference across lines:
 ```math
 \begin{aligned}
@@ -29,6 +33,15 @@ function dcopf_transmission!(EP::Model, inputs::Dict, setup::Dict)
     Z = inputs["Z"]     # Number of zones
     L = inputs["L"]     # Number of transmission lines
 
+    # Parallel circuits scale line susceptance with available transmission capacity
+    @expression(EP, vNumParallel[l=1:L],
+        setup["NetworkExpansion"] == 1 ?
+        EP[:eAvail_Trans_Cap][l] / inputs["pSingle_Line_Max"][l] :
+        inputs["pNum_Parallel"][l]
+    )
+
+    @expression(EP, DC_OPF_coeff[l=1:L], vNumParallel[l] * inputs["pDC_OPF_coeff"][l])
+
     ### DC-OPF variables ###
 
     # Voltage angle variables of each zone "z" at hour "t" 
@@ -37,11 +50,10 @@ function dcopf_transmission!(EP::Model, inputs::Dict, setup::Dict)
     ### DC-OPF constraints ###
 
     # Power flow constraint:: vFLOW = DC_OPF_coeff * (vANGLE[START_ZONE] - vANGLE[END_ZONE])
-    @constraint(EP,
-        cPOWER_FLOW_OPF[l = 1:L, t = 1:T],
-        EP[:vFLOW][l,
-            t]==inputs["pDC_OPF_coeff"][l] *
-                sum(inputs["pNet_Map"][l, z] * vANGLE[z, t] for z in 1:Z))
+    @constraint(EP, cPOWER_FLOW_OPF[l = 1:L, t = 1:T],
+        EP[:vFLOW][l, t] ==
+            DC_OPF_coeff[l] *
+            sum(inputs["pNet_Map"][l, z] * vANGLE[z, t] for z in 1:Z))
 
     # Bus angle limits (except slack bus)
     @constraints(EP,

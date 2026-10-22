@@ -2,6 +2,10 @@
 	transmission!(EP::Model, inputs::Dict, setup::Dict)
 This function establishes decisions, expressions, and constraints related to transmission power flows between model zones and associated transmission losses (if modeled).
 
+For ACOPF, `acopf_transmission!` defines line flows, losses, and apparent power limits;
+`generate_model` adds net active power flows to the zonal balance. The flow limits
+and loss approximations below apply to transport and DCOPF.
+
 Power flow and transmission loss terms are also added to the power balance constraint for each zone:
 ```math
 \begin{aligned}
@@ -94,46 +98,48 @@ function transmission!(EP::Model, inputs::Dict, setup::Dict)
     EnergyShareRequirement = setup["EnergyShareRequirement"]
     IncludeLossesInESR = setup["IncludeLossesInESR"]
 
-    ## sets and indices for transmission losses
-    TRANS_LOSS_SEGS = inputs["TRANS_LOSS_SEGS"] # Number of segments used in piecewise linear approximations quadratic loss functions - can only take values of TRANS_LOSS_SEGS =1, 2
-    LOSS_LINES = inputs["LOSS_LINES"] # Lines for which loss coefficients apply (are non-zero);
+    ## Transmission loss formulation
+    ac_opf = setup["AC_OPF"] == 1
+    TRANS_LOSS_SEGS = ac_opf ? 0 : inputs["TRANS_LOSS_SEGS"] # Disable loss approximations for ACOPF
+    LOSS_LINES = ac_opf ? (1:L) : inputs["LOSS_LINES"] # ACOPF models losses on all lines
 
     ### Variables ###
 
     # Power flow on each transmission line "l" at hour "t"
     @variable(EP, vFLOW[l = 1:L, t = 1:T])
 
-    if (TRANS_LOSS_SEGS == 1)  #loss is a constant times absolute value of power flow
-        # Positive and negative flow variables
-        @variable(EP, vTAUX_NEG[l in LOSS_LINES, t = 1:T]>=0)
-        @variable(EP, vTAUX_POS[l in LOSS_LINES, t = 1:T]>=0)
+    # Transmission losses on each transmission line "l" at hour "t"
+    @variable(EP, vTLOSS[l in LOSS_LINES, t = 1:T])
 
-        if UCommit == 1
-            # Single binary variable to ensure positive or negative flows only
-            @variable(EP, vTAUX_POS_ON[l in LOSS_LINES, t = 1:T], Bin)
-            # Continuous variable representing product of binary variable (vTAUX_POS_ON) and avail transmission capacity
-            @variable(EP, vPROD_TRANSCAP_ON[l in LOSS_LINES, t = 1:T]>=0)
-        end
-    else # TRANS_LOSS_SEGS>1
-        # Auxiliary variables for linear piecewise interpolation of quadratic losses
-        @variable(EP, vTAUX_NEG[l in LOSS_LINES, s = 0:TRANS_LOSS_SEGS, t = 1:T]>=0)
-        @variable(EP, vTAUX_POS[l in LOSS_LINES, s = 0:TRANS_LOSS_SEGS, t = 1:T]>=0)
-        if UCommit == 1
-            # Binary auxilary variables for each segment >1 to ensure segments fill in order
-            @variable(EP,
-                vTAUX_POS_ON[l in LOSS_LINES, s = 1:TRANS_LOSS_SEGS, t = 1:T],
-                Bin)
-            @variable(EP,
-                vTAUX_NEG_ON[l in LOSS_LINES, s = 1:TRANS_LOSS_SEGS, t = 1:T],
-                Bin)
+    if !ac_opf
+        if (TRANS_LOSS_SEGS == 1)  #loss is a constant times absolute value of power flow
+            # Positive and negative flow variables
+            @variable(EP, vTAUX_NEG[l in LOSS_LINES, t = 1:T]>=0)
+            @variable(EP, vTAUX_POS[l in LOSS_LINES, t = 1:T]>=0)
+
+            if UCommit == 1
+                # Single binary variable to ensure positive or negative flows only
+                @variable(EP, vTAUX_POS_ON[l in LOSS_LINES, t = 1:T], Bin)
+                # Continuous variable representing product of binary variable (vTAUX_POS_ON) and avail transmission capacity
+                @variable(EP, vPROD_TRANSCAP_ON[l in LOSS_LINES, t = 1:T]>=0)
+            end
+        else # TRANS_LOSS_SEGS>1
+            # Auxiliary variables for linear piecewise interpolation of quadratic losses
+            @variable(EP, vTAUX_NEG[l in LOSS_LINES, s = 0:TRANS_LOSS_SEGS, t = 1:T]>=0)
+            @variable(EP, vTAUX_POS[l in LOSS_LINES, s = 0:TRANS_LOSS_SEGS, t = 1:T]>=0)
+            if UCommit == 1
+                # Binary auxilary variables for each segment >1 to ensure segments fill in order
+                @variable(EP,
+                    vTAUX_POS_ON[l in LOSS_LINES, s = 1:TRANS_LOSS_SEGS, t = 1:T],
+                    Bin)
+                @variable(EP,
+                    vTAUX_NEG_ON[l in LOSS_LINES, s = 1:TRANS_LOSS_SEGS, t = 1:T],
+                    Bin)
+            end
         end
     end
 
-    # Transmission losses on each transmission line "l" at hour "t"
-    @variable(EP, vTLOSS[l in LOSS_LINES, t = 1:T]>=0)
-
     ### Expressions ###
-
     ## Transmission power flow and loss related expressions:
 
     # Net power flow outgoing from zone "z" at hour "t" in MW
@@ -147,14 +153,29 @@ function transmission!(EP::Model, inputs::Dict, setup::Dict)
         sum(abs(inputs["pNet_Map"][l, z]) * (1 / 2) * vTLOSS[l, t] for l in LOSS_LINES))
 
     ## Power Balance Expressions ##
-
     @expression(EP, ePowerBalanceNetExportFlows[t = 1:T, z = 1:Z],
         -eNet_Export_Flows[z, t])
     @expression(EP, ePowerBalanceLossesByZone[t = 1:T, z = 1:Z],
         -eLosses_By_Zone[z, t])
 
-    add_similar_to_expression!(EP[:ePowerBalance], ePowerBalanceLossesByZone)
-    add_similar_to_expression!(EP[:ePowerBalance], ePowerBalanceNetExportFlows)
+    if !ac_opf
+
+        add_similar_to_expression!(EP[:ePowerBalance], ePowerBalanceLossesByZone)
+        add_similar_to_expression!(EP[:ePowerBalance], ePowerBalanceNetExportFlows)
+
+        ### Constraints ###
+        ## Power flow and transmission (between zone) loss related constraints
+
+        # Maximum power flows, power flow on each transmission line cannot exceed maximum capacity of the line at any hour "t"
+        @constraint(EP, cLossNonNeg[l in LOSS_LINES, t in 1:T], vTLOSS[l, t] >= 0)
+
+        @constraints(EP,
+        begin
+            cMaxFlow_out[l = 1:L, t = 1:T], vFLOW[l, t] <= EP[:eAvail_Trans_Cap][l]
+            cMaxFlow_in[l = 1:L, t = 1:T], vFLOW[l, t]  >= -EP[:eAvail_Trans_Cap][l]
+        end)
+
+    end
 
     # Capacity Reserves Margin policy
     if CapacityReserveMargin > 0
@@ -166,17 +187,6 @@ function transmission!(EP::Model, inputs::Dict, setup::Dict)
             add_similar_to_expression!(EP[:eCapResMarBalance], -1.0, eCapResMarBalanceTrans)
         end
     end
-
-    ### Constraints ###
-
-    ## Power flow and transmission (between zone) loss related constraints
-
-    # Maximum power flows, power flow on each transmission line cannot exceed maximum capacity of the line at any hour "t"
-    @constraints(EP,
-        begin
-            cMaxFlow_out[l = 1:L, t = 1:T], vFLOW[l, t] <= EP[:eAvail_Trans_Cap][l]
-            cMaxFlow_in[l = 1:L, t = 1:T], vFLOW[l, t] >= -EP[:eAvail_Trans_Cap][l]
-        end)
 
     # Transmission loss related constraints - linear losses as a function of absolute value
     if TRANS_LOSS_SEGS == 1
@@ -228,7 +238,7 @@ function transmission!(EP::Model, inputs::Dict, setup::Dict)
     end # End if(TRANS_LOSS_SEGS == 1) block
 
     # When number of segments is greater than 1
-    if (TRANS_LOSS_SEGS > 1)
+    if TRANS_LOSS_SEGS > 1
         ## between zone transmission loss constraints
         # Losses are expressed as a piecewise approximation of a quadratic function of power flows across each line
         # Eq 1: Total losses are function of loss coefficient times the sum of auxilary segment variables across all segments of piecewise approximation

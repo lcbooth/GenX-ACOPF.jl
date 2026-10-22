@@ -1,0 +1,10 @@
+# Allow-list: only code, notebooks and docs are version-controlled here.
+# Source data, intermediates and outputs are downloaded or rebuilt; see Germany/README.md and ERCOT/README.md.
+*
+!*/
+!.gitignore
+!*.md
+!*.py
+!*.ipynb
+!requirements.txt
+!*.yaml

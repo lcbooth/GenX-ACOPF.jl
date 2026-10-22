@@ -1,0 +1,66 @@
+IterativelyAddPeriods: 1
+ExtremePeriods:
+  Wind:
+    System:
+      Absolute:
+        Min: 0
+        Max: 0
+      Integral:
+        Min: 0
+        Max: 0
+    Zone:
+      Absolute:
+        Min: 0
+        Max: 0
+      Integral:
+        Min: 1
+        Max: 0
+  PV:
+    System:
+      Absolute:
+        Min: 0
+        Max: 0
+      Integral:
+        Min: 0
+        Max: 0
+    Zone:
+      Absolute:
+        Min: 0
+        Max: 0
+      Integral:
+        Min: 1
+        Max: 0
+  Demand:
+    System:
+      Absolute:
+        Min: 0
+        Max: 1
+      Integral:
+        Min: 0
+        Max: 0
+    Zone:
+      Absolute:
+        Min: 0
+        Max: 0
+      Integral:
+        Min: 0
+        Max: 0
+UseExtremePeriods: 0
+MinPeriods: 32
+MaxPeriods: 32
+DemandWeight: 1
+ClusterFuelPrices: 1
+nReps: 100
+MultiStageConcatenate: 0
+Threshold: 0.05
+TimestepsPerRepPeriod: 168
+IterateMethod: "cluster"
+ScalingMethod: "S"
+ClusterMethod: "kmeans"
+WeightTotal: 8760
+Seed: 1234  # fixed seed for reproducible clustering (overridden by $GENX_TDR_SEED)
+# Reuse saved representative weeks to avoid clustering differences between machines.
+# Remove PeriodMap to re-cluster.
+# Main results use 32 weeks; the 20-week sensitivities use MinPeriods/MaxPeriods 20 with
+# PeriodMap: period_map_n20.csv.
+PeriodMap: period_map_n32.csv

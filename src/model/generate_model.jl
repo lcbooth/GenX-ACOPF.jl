@@ -59,6 +59,9 @@ The power balance constraint of the model ensures that electricity demand is met
 \end{aligned}
 ```
 
+For ACOPF, the network contribution is the net active power leaving each zone,
+including line and shunt losses, as defined in `acopf_transmission!`.
+
 # Arguments
 - `setup::Dict`: Dictionary containing the settings for the model.
 - `inputs::Dict`: Dictionary containing the inputs for the model.
@@ -146,10 +149,14 @@ function generate_model(setup::Dict, inputs::Dict, OPTIMIZER::MOI.OptimizerWithA
     if Z > 1
         investment_transmission!(EP, inputs, setup)
         transmission!(EP, inputs, setup)
-    end
 
-    if Z > 1 && setup["DC_OPF"] != 0
-        dcopf_transmission!(EP, inputs, setup)
+        if setup["AC_OPF"] != 0 && setup["DC_OPF"] != 0
+            error("AC_OPF and DC_OPF are both set. Please select only one.")
+        elseif setup["AC_OPF"] != 0
+            acopf_transmission!(EP, inputs, setup)
+        elseif setup["DC_OPF"] != 0
+            dcopf_transmission!(EP, inputs, setup)
+        end
     end
 
     # Technologies
@@ -259,6 +266,11 @@ function generate_model(setup::Dict, inputs::Dict, OPTIMIZER::MOI.OptimizerWithA
 
     ## Define the objective function
     @objective(EP, Min, setup["ObjScale"]*EP[:eObj])
+
+    # Subtract net active power leaving each zone in ACOPF
+    if setup["AC_OPF"] == 1
+        EP[:ePowerBalance] -= EP[:eActivePowerFlow]
+    end
 
     ## Power balance constraints
     # demand = generation + storage discharge - storage charge - demand deferral + deferred demand satisfaction - demand curtailment (NSE)

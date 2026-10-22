@@ -48,6 +48,10 @@ end
         include("test_DCOPF.jl")
     end
 
+    @testset "ACOPF" begin
+        include("test_ACOPF.jl")
+    end
+
     @testset "Multi Fuels" begin
         include("test_multifuels.jl")
     end

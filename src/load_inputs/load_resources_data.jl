@@ -1206,7 +1206,7 @@ function add_resources_to_input_data!(inputs::Dict,
         process_piecewisefuelusage!(setup, gen, inputs)
     else
         # Set of thermal resources with unit commitment
-        inputs["THERM_COMMIT"] = []
+        inputs["THERM_COMMIT"] = Int64[]
         # Set of thermal resources without unit commitment
         inputs["THERM_NO_COMMIT"] = inputs["THERM_ALL"]
     end
